@@ -1,7 +1,5 @@
 import { useAuth0 } from '@auth0/auth0-react';
-
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
-const AUDIENCE = import.meta.env.VITE_AUTH0_AUDIENCE;
+import { getConfig } from '../config';
 
 export class ApiError extends Error {
   constructor(public status: number, public body: unknown, message: string) {
@@ -21,8 +19,9 @@ export async function apiFetch<T>(
   init: RequestInit,
   getAccessToken: GetAccessToken,
 ): Promise<T> {
-  const token = await getAccessToken({ audience: AUDIENCE });
-  const url = path.startsWith('http') ? path : `${BASE_URL}${path}`;
+  const { apiBaseUrl, auth0Audience } = getConfig();
+  const token = await getAccessToken({ audience: auth0Audience });
+  const url = path.startsWith('http') ? path : `${apiBaseUrl}${path}`;
   const headers = new Headers(init.headers);
   headers.set('Authorization', `Bearer ${token}`);
   if (init.body && !headers.has('Content-Type')) {
@@ -54,7 +53,9 @@ function safeJson(text: string): unknown {
 export function useApi() {
   const { getAccessTokenSilently } = useAuth0();
   const tokenFn: GetAccessToken = (opts) =>
-    getAccessTokenSilently({ authorizationParams: { audience: opts?.audience ?? AUDIENCE } });
+    getAccessTokenSilently({
+      authorizationParams: { audience: opts?.audience ?? getConfig().auth0Audience },
+    });
   return {
     get: <T,>(path: string) => apiFetch<T>(path, { method: 'GET' }, tokenFn),
     post: <T,>(path: string, body: unknown) =>

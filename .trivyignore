@@ -1,0 +1,4 @@
+# Trivy allow-list. One CVE per line, optionally followed by a justification.
+# Format: <CVE-ID>          # YYYY-MM-DD <username> reason
+# Example:
+# CVE-2024-12345           # 2025-01-15 alice false-positive in vendored lib; no exposure

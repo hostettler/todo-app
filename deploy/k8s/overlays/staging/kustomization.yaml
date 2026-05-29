@@ -1,0 +1,60 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: todo-staging
+
+resources:
+  - ../../base
+
+patches:
+  - target: { kind: Namespace, name: PLACEHOLDER }
+    patch: |-
+      - op: replace
+        path: /metadata/name
+        value: todo-staging
+  - target: { kind: Ingress, name: todo-app }
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: todo-staging.example.com
+  - target: { kind: ConfigMap, name: todo-frontend-config }
+    patch: |-
+      - op: replace
+        path: /data/config.json
+        value: |
+          {
+            "auth0Domain": "your-tenant.auth0.com",
+            "auth0ClientId": "REPLACE_ME_STAGING_CLIENT_ID",
+            "auth0Audience": "https://api.example.com",
+            "apiBaseUrl": "/api"
+          }
+  - target: { kind: SecretProviderClass, name: todo-backend-secrets }
+    patch: |-
+      - op: replace
+        path: /spec/parameters/clientID
+        value: REPLACE_ME_WORKLOAD_IDENTITY_CLIENT_ID
+      - op: replace
+        path: /spec/parameters/keyvaultName
+        value: kv-todo-staging
+      - op: replace
+        path: /spec/parameters/tenantId
+        value: REPLACE_ME_TENANT_ID
+  - target: { kind: ServiceAccount, name: todo-backend }
+    patch: |-
+      - op: replace
+        path: /metadata/annotations/azure.workload.identity~1client-id
+        value: REPLACE_ME_WORKLOAD_IDENTITY_CLIENT_ID
+
+replicas:
+  - name: todo-backend
+    count: 1
+  - name: todo-frontend
+    count: 1
+
+images:
+  - name: todo-backend
+    newName: REPLACE_ME_ACR.azurecr.io/todo-backend
+    newTag: placeholder
+  - name: todo-frontend
+    newName: REPLACE_ME_ACR.azurecr.io/todo-frontend
+    newTag: placeholder

@@ -1,0 +1,201 @@
+name: deploy
+
+on:
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options: [staging, production]
+      image_tag:
+        description: Image tag to deploy (e.g. sha-abc1234 or v0.1.0). Leave blank to use HEAD.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+  deployments: write
+  actions: read
+
+jobs:
+  resolve:
+    name: Resolve deployment target
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    outputs:
+      environment: ${{ steps.r.outputs.environment }}
+      image_tag:   ${{ steps.r.outputs.image_tag }}
+      ref:         ${{ steps.r.outputs.ref }}
+      sha:         ${{ steps.r.outputs.sha }}
+    steps:
+      - id: r
+        env:
+          DISPATCH_ENV:  ${{ inputs.environment }}
+          DISPATCH_TAG:  ${{ inputs.image_tag }}
+          WR_EVENT:      ${{ github.event.workflow_run.event }}
+          WR_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          WR_HEAD_SHA:   ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            ENV="${DISPATCH_ENV}"
+            SHA="${GITHUB_SHA}"
+            REF="${GITHUB_REF}"
+            TAG="${DISPATCH_TAG:-sha-${SHA::7}}"
+          else
+            SHA="${WR_HEAD_SHA}"
+            REF="${WR_HEAD_BRANCH:-${GITHUB_REF}}"
+            TAG="sha-${SHA::7}"
+            # The release workflow runs on both pushes to main and on tag pushes.
+            # A workflow_run trigger does not expose the ref type cleanly here,
+            # so we treat main pushes as staging and require a manual dispatch
+            # for production tag deploys (gated by environment approval).
+            if [[ "${WR_HEAD_BRANCH}" == "main" ]]; then
+              ENV="staging"
+            else
+              echo "::error::Non-main workflow_run is not auto-deployed. Use workflow_dispatch for production tag deploys."
+              exit 1
+            fi
+          fi
+          echo "environment=${ENV}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${TAG}"   >> "$GITHUB_OUTPUT"
+          echo "ref=${REF}"         >> "$GITHUB_OUTPUT"
+          echo "sha=${SHA}"         >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy to ${{ needs.resolve.outputs.environment }}
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ needs.resolve.outputs.environment }}
+    env:
+      ENV:        ${{ needs.resolve.outputs.environment }}
+      IMAGE_TAG:  ${{ needs.resolve.outputs.image_tag }}
+      REGISTRY:   ${{ vars.ACR_LOGIN_SERVER }}
+      AKS_RG:     ${{ vars.AKS_RESOURCE_GROUP }}
+      AKS_NAME:   ${{ vars.AKS_CLUSTER_NAME }}
+      APP_HOST:   ${{ vars.APP_HOST }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+
+      - name: Enforce production tag policy
+        if: env.ENV == 'production'
+        run: |
+          set -euo pipefail
+          if [[ ! "${{ needs.resolve.outputs.ref }}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+             && [[ "${{ github.event_name }}" != "workflow_dispatch" ]]; then
+            echo "::error::Production deploys must originate from a v*.*.* tag or workflow_dispatch"
+            exit 1
+          fi
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install kustomize
+        run: |
+          set -euo pipefail
+          curl -sLo /tmp/kustomize.tgz \
+            https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz
+          tar -xzf /tmp/kustomize.tgz -C /tmp
+          sudo mv /tmp/kustomize /usr/local/bin/kustomize
+          kustomize version
+
+      - name: Render manifests with pinned image tag
+        id: render
+        run: |
+          set -euo pipefail
+          cd deploy/k8s/overlays/${ENV}
+          kustomize edit set image \
+            todo-backend=${REGISTRY}/todo-backend:${IMAGE_TAG} \
+            todo-frontend=${REGISTRY}/todo-frontend:${IMAGE_TAG}
+          mkdir -p "${RUNNER_TEMP}/manifests"
+          kustomize build . > "${RUNNER_TEMP}/manifests/rendered.yaml"
+          echo "path=${RUNNER_TEMP}/manifests" >> "$GITHUB_OUTPUT"
+          echo "--- Rendered manifests (head) ---"
+          head -n 60 "${RUNNER_TEMP}/manifests/rendered.yaml"
+
+      - name: Apply via az aks command invoke (private AKS API)
+        id: apply
+        run: |
+          set -euo pipefail
+          az aks command invoke \
+            --resource-group "${AKS_RG}" \
+            --name "${AKS_NAME}" \
+            --file "${{ steps.render.outputs.path }}/rendered.yaml" \
+            --command "kubectl apply -f rendered.yaml"
+
+      - name: Wait for rollout
+        id: rollout
+        run: |
+          set -euo pipefail
+          NS="todo-${ENV}"
+          az aks command invoke \
+            --resource-group "${AKS_RG}" \
+            --name "${AKS_NAME}" \
+            --command "kubectl -n ${NS} rollout status deployment/todo-backend deployment/todo-frontend --timeout=5m"
+
+      - name: Smoke test
+        id: smoke
+        run: |
+          set -euo pipefail
+          echo "Backend health:"
+          curl -fsS --retry 10 --retry-delay 6 --retry-connrefused "https://${APP_HOST}/q/health/ready"
+          echo
+          echo "Frontend root:"
+          curl -fsS --retry 10 --retry-delay 6 --retry-connrefused -o /dev/null -w "HTTP %{http_code}\n" "https://${APP_HOST}/"
+
+      - name: Auto-rollback on failure
+        if: failure() && (steps.apply.outcome == 'success' || steps.rollout.outcome == 'failure' || steps.smoke.outcome == 'failure')
+        run: |
+          set +e
+          NS="todo-${ENV}"
+          az aks command invoke \
+            --resource-group "${AKS_RG}" \
+            --name "${AKS_NAME}" \
+            --command "kubectl -n ${NS} rollout undo deployment/todo-backend && kubectl -n ${NS} rollout undo deployment/todo-frontend && kubectl -n ${NS} describe deployment/todo-backend deployment/todo-frontend && kubectl -n ${NS} get pods -o wide"
+
+      - name: Capture diagnostics on failure
+        if: failure()
+        run: |
+          set +e
+          NS="todo-${ENV}"
+          mkdir -p "${RUNNER_TEMP}/diag"
+          az aks command invoke --resource-group "${AKS_RG}" --name "${AKS_NAME}" \
+            --command "kubectl -n ${NS} describe deployment/todo-backend deployment/todo-frontend" \
+            > "${RUNNER_TEMP}/diag/describe.txt" 2>&1
+          az aks command invoke --resource-group "${AKS_RG}" --name "${AKS_NAME}" \
+            --command "kubectl -n ${NS} logs deployment/todo-backend --tail=200; echo '---'; kubectl -n ${NS} logs deployment/todo-frontend --tail=200" \
+            > "${RUNNER_TEMP}/diag/logs.txt" 2>&1
+
+      - name: Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-diagnostics-${{ env.ENV }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/diag/*
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## Deployment summary";
+            echo "- Environment: \`${ENV}\`";
+            echo "- Ref: \`${{ needs.resolve.outputs.ref }}\`";
+            echo "- SHA: \`${{ needs.resolve.outputs.sha }}\`";
+            echo "- Image tag: \`${IMAGE_TAG}\`";
+            echo "- Backend image: \`${REGISTRY}/todo-backend:${IMAGE_TAG}\`";
+            echo "- Frontend image: \`${REGISTRY}/todo-frontend:${IMAGE_TAG}\`";
+            echo "- Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}";
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,5 +1,8 @@
 # Scalability Test — Todo Application
 
+[![ci](https://github.com/hostettler/todo-app/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/hostettler/todo-app/actions/workflows/ci.yml)
+[![release](https://github.com/hostettler/todo-app/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/hostettler/todo-app/actions/workflows/release.yml)
+
 A multi-user todo list application used as a baseline scalability/perf
 test vehicle. It establishes a full end-to-end stack: React frontend,
 Quarkus backend, PostgreSQL, and Auth0-based identity.
@@ -85,6 +88,21 @@ of security headers (`X-Content-Type-Options`, `X-Frame-Options`,
 `Referrer-Policy`, `Content-Security-Policy`,
 `Strict-Transport-Security`, `Cache-Control: no-store` on authenticated
 responses).
+
+## CI/CD
+
+| Workflow            | Trigger                              | Purpose                                                                       |
+| ------------------- | ------------------------------------ | ----------------------------------------------------------------------------- |
+| `.github/workflows/ci.yml`      | PR → `main`, push → `main`     | Lint, tests, ≥ 80 % coverage gate, CodeQL, Trivy filesystem scan.            |
+| `.github/workflows/release.yml` | push → `main`, tag `v*.*.*`    | Build, scan, sign (cosign), and push backend + frontend images to ACR.        |
+| `.github/workflows/deploy.yml`  | After `release.yml`, or manual | Auto-deploy `main` to `staging`; tag-deploy `v*` to `production` (approval). |
+
+All Azure access uses **OIDC federated credentials** — no long-lived
+secrets in GitHub. Deployment targets the AKS cluster in subscription
+`31d159bc-46b7-43e6-a2e8-91d862090644`. See
+[`deploy/README.md`](deploy/README.md) for the full Azure setup,
+required GitHub variables, environment configuration, and rollback
+procedure.
 
 ## Test coverage policy
 

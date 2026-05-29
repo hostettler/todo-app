@@ -1,0 +1,171 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write          # required to publish GitHub Releases on tag builds
+  id-token: write          # required for OIDC federation to Azure + cosign
+  packages: read
+
+env:
+  REGISTRY: ${{ vars.ACR_LOGIN_SERVER }}
+
+jobs:
+  build-and-push:
+    name: Build & push ${{ matrix.component }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: backend
+            context: backend
+          - component: frontend
+            context: frontend
+    outputs:
+      backend_digest: ${{ steps.export.outputs.backend_digest }}
+      frontend_digest: ${{ steps.export.outputs.frontend_digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute tags
+        id: tags
+        run: |
+          set -euo pipefail
+          SHA_TAG="sha-${GITHUB_SHA::7}"
+          IMAGE="${{ env.REGISTRY }}/todo-${{ matrix.component }}"
+          TAGS="${IMAGE}:${SHA_TAG}"
+          if [[ "${GITHUB_REF}" == refs/tags/v*.*.* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+            TAGS="${TAGS},${IMAGE}:${VERSION},${IMAGE}:latest"
+            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "image=${IMAGE}"     >> "$GITHUB_OUTPUT"
+          echo "sha_tag=${SHA_TAG}" >> "$GITHUB_OUTPUT"
+          echo "tags=${TAGS}"       >> "$GITHUB_OUTPUT"
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: ACR login
+        run: az acr login --name "${{ env.REGISTRY }}"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Check if SHA tag already exists (immutability)
+        id: exists
+        run: |
+          set -euo pipefail
+          if docker manifest inspect "${{ steps.tags.outputs.image }}:${{ steps.tags.outputs.sha_tag }}" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Image ${{ steps.tags.outputs.image }}:${{ steps.tags.outputs.sha_tag }} already exists; skipping push"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build & push
+        if: steps.exists.outputs.skip == 'false'
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+
+      - name: Resolve image digest
+        id: digest
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ steps.build.outputs.digest || '' }}" ]]; then
+            DIGEST="${{ steps.build.outputs.digest }}"
+          else
+            DIGEST=$(docker buildx imagetools inspect "${{ steps.tags.outputs.image }}:${{ steps.tags.outputs.sha_tag }}" --format '{{json .Manifest}}' | jq -r .digest)
+          fi
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "ref=${{ steps.tags.outputs.image }}@${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ steps.digest.outputs.ref }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          trivyignores: .trivyignore
+
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.digest.outputs.ref }}
+          format: cyclonedx-json
+          artifact-name: ${{ matrix.component }}-sbom.cdx.json
+          output-file: ${{ matrix.component }}-sbom.cdx.json
+          upload-artifact: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (keyless OIDC)
+        id: cosign
+        continue-on-error: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: cosign sign --yes "${{ steps.digest.outputs.ref }}"
+
+      - name: Hard-fail on signing error for tag builds
+        if: startsWith(github.ref, 'refs/tags/v') && steps.cosign.outcome != 'success'
+        run: |
+          echo "::error::cosign signing failed on a tag build"
+          exit 1
+
+      - name: Export digest output
+        id: export
+        run: |
+          echo "${{ matrix.component }}_digest=${{ steps.digest.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+      - name: Job summary
+        run: |
+          {
+            echo "## ${{ matrix.component }}";
+            echo "- Image: \`${{ steps.tags.outputs.image }}\`";
+            echo "- Tags: \`${{ steps.tags.outputs.tags }}\`";
+            echo "- Digest: \`${{ steps.digest.outputs.digest }}\`";
+            echo "- Skipped push: \`${{ steps.exists.outputs.skip }}\`";
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release-notes:
+    name: GitHub Release (tag only)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-sbom.cdx.json'
+          merge-multiple: true
+          path: sboms
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: sboms/*
