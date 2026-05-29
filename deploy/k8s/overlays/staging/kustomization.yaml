@@ -16,34 +16,34 @@ patches:
     patch: |-
       - op: replace
         path: /spec/rules/0/host
-        value: todo-staging.example.com
+        value: todo-staging.local
   - target: { kind: ConfigMap, name: todo-frontend-config }
     patch: |-
       - op: replace
         path: /data/config.json
         value: |
           {
-            "auth0Domain": "your-tenant.auth0.com",
-            "auth0ClientId": "REPLACE_ME_STAGING_CLIENT_ID",
-            "auth0Audience": "https://api.example.com",
+            "auth0Domain": "pinfo.us.auth0.com",
+            "auth0ClientId": "Km8ICah8B4Wo6F0J1uo0fKUGvuFcM7uQ",
+            "auth0Audience": "https://todo-api.local",
             "apiBaseUrl": "/api"
           }
   - target: { kind: SecretProviderClass, name: todo-backend-secrets }
     patch: |-
       - op: replace
         path: /spec/parameters/clientID
-        value: REPLACE_ME_WORKLOAD_IDENTITY_CLIENT_ID
+        value: 6e185919-c495-44fb-aafe-981e01a57e04
       - op: replace
         path: /spec/parameters/keyvaultName
         value: kv-todo-staging
       - op: replace
         path: /spec/parameters/tenantId
-        value: REPLACE_ME_TENANT_ID
+        value: 20135588-0038-4e9b-b8bb-5684139f119b
   - target: { kind: ServiceAccount, name: todo-backend }
     patch: |-
       - op: replace
         path: /metadata/annotations/azure.workload.identity~1client-id
-        value: REPLACE_ME_WORKLOAD_IDENTITY_CLIENT_ID
+        value: 6e185919-c495-44fb-aafe-981e01a57e04
 
 replicas:
   - name: todo-backend
@@ -53,8 +53,8 @@ replicas:
 
 images:
   - name: todo-backend
-    newName: REPLACE_ME_ACR.azurecr.io/todo-backend
+    newName: acrtodoapphostettler.azurecr.io/todo-backend
     newTag: placeholder
   - name: todo-frontend
-    newName: REPLACE_ME_ACR.azurecr.io/todo-frontend
+    newName: acrtodoapphostettler.azurecr.io/todo-frontend
     newTag: placeholder
