@@ -56,7 +56,7 @@ spec:
             - name: QUARKUS_OIDC_AUTH_SERVER_URL
               valueFrom:
                 secretKeyRef: { name: todo-backend-secrets, key: oidc-issuer }
-            - name: QUARKUS_OIDC_CLIENT_ID
+            - name: QUARKUS_OIDC_TOKEN_AUDIENCE
               valueFrom:
                 secretKeyRef: { name: todo-backend-secrets, key: oidc-audience }
           resources:
