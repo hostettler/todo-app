@@ -16,7 +16,7 @@ patches:
     patch: |-
       - op: replace
         path: /spec/rules/0/host
-        value: todo-staging.local
+        value: todo.p-info.net
   - target: { kind: ConfigMap, name: todo-frontend-config }
     patch: |-
       - op: replace
