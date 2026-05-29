@@ -52,8 +52,10 @@ GH_REPO=todo-app
 az group create -n "$RG" -l "$LOCATION"
 
 # 2. ACR (admin disabled, anonymous pull disabled)
-az acr create -g "$RG" -n "$ACR" --sku Standard \
-  --admin-enabled false --anonymous-pull-enabled false
+az acr create -g "$RG" -n "$ACR" --sku Standard --admin-enabled false
+# Anonymous pull is off by default; this makes it explicit (and is the only
+# subcommand that accepts the flag — it is not available on `az acr create`).
+az acr update -g "$RG" -n "$ACR" --anonymous-pull-enabled false
 az acr config retention update -r "$ACR" --status enabled --days 90 --type UntaggedManifests
 # Optional: lock images so SHA tags cannot be overwritten
 # az acr repository update --name $ACR --image todo-backend  --write-enabled false  # after first push
