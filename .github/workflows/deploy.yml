@@ -146,15 +146,36 @@ jobs:
             --name "${AKS_NAME}" \
             --command "kubectl -n ${NS} rollout status deployment/todo-backend deployment/todo-frontend --timeout=5m"
 
-      - name: Smoke test
+      - name: Smoke test (in-cluster)
         id: smoke
         run: |
           set -euo pipefail
-          echo "Backend health:"
-          curl -fsS --retry 10 --retry-delay 6 --retry-connrefused "https://${APP_HOST}/q/health/ready"
-          echo
-          echo "Frontend root:"
-          curl -fsS --retry 10 --retry-delay 6 --retry-connrefused -o /dev/null -w "HTTP %{http_code}\n" "https://${APP_HOST}/"
+          NS="todo-${ENV}"
+          # Run curl from inside the cluster against ClusterIP services so the
+          # smoke test does not depend on public DNS or an ingress controller.
+          # Retries are handled inside the pod to ride out warm-up.
+          az aks command invoke \
+            --resource-group "${AKS_RG}" \
+            --name "${AKS_NAME}" \
+            --command "kubectl -n ${NS} run smoke-${GITHUB_RUN_ID} \
+              --rm -i --restart=Never --quiet \
+              --image=curlimages/curl:8.10.1 \
+              --command -- sh -c '
+                set -e
+                echo Backend health:
+                for i in 1 2 3 4 5 6 7 8 9 10; do
+                  if curl -fsS http://todo-backend/q/health/ready; then break; fi
+                  sleep 6
+                done
+                echo
+                echo Frontend root:
+                for i in 1 2 3 4 5 6 7 8 9 10; do
+                  code=\$(curl -s -o /dev/null -w %{http_code} http://todo-frontend/)
+                  if [ \"\$code\" = \"200\" ]; then echo HTTP \$code; exit 0; fi
+                  sleep 6
+                done
+                echo HTTP \$code; exit 1
+              '"
 
       - name: Auto-rollback on failure
         if: failure() && (steps.apply.outcome == 'success' || steps.rollout.outcome == 'failure' || steps.smoke.outcome == 'failure')
