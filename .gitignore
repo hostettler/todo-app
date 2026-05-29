@@ -1,0 +1,56 @@
+# --- Java / Maven ---
+target/
+*.class
+*.jar
+*.war
+*.ear
+*.log
+hs_err_pid*
+
+# Maven wrapper local install
+.mvn/wrapper/maven-wrapper.jar
+
+# --- Quarkus ---
+.quarkus/
+quarkus.log
+.env
+
+# --- Node / frontend ---
+node_modules/
+dist/
+dist-ssr/
+*.local
+coverage/
+.vite/
+
+# --- Environment files ---
+.env.local
+.env.*.local
+
+# --- IDE ---
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+.project
+.classpath
+.settings/
+.factorypath
+nbproject/
+nbactions.xml
+nb-configuration.xml
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# --- Misc ---
+*.swp
+*.swo
+*~
