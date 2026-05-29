@@ -66,7 +66,7 @@ az aks create -g "$RG" -n "$AKS" \
   --enable-managed-identity \
   --enable-oidc-issuer \
   --enable-workload-identity \
-  --enable-azure-keyvault-secrets-provider \
+  --enable-addons azure-keyvault-secrets-provider \
   --enable-private-cluster \
   --network-plugin azure \
   --node-count 2 \
