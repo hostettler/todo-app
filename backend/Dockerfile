@@ -15,6 +15,13 @@ RUN ./mvnw -B -DskipTests -Dquarkus.package.jar.type=fast-jar package
 # ---- Runtime stage -------------------------------------------------------
 FROM eclipse-temurin:21-jre
 
+# Patch base OS packages and remove pebble (Go-based init wrapper we don't
+# use; it ships with eclipse-temurin and routinely carries Go stdlib CVEs).
+RUN apt-get update \
+ && apt-get -y upgrade \
+ && rm -f /usr/bin/pebble \
+ && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd -g 1001 app && useradd -u 1001 -g 1001 -ms /sbin/nologin app
 
 WORKDIR /deployments
